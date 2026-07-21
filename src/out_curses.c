@@ -46,10 +46,13 @@ enum {
 	KEY_TOGGLE_GRAPH	= 'g',
 	KEY_TOGGLE_DETAILS	= 'd',
 	KEY_TOGGLE_INFO		= 'i',
+	KEY_TOGGLE_IPV4		= '4',
+	KEY_TOGGLE_IPV6		= '6',
 	KEY_COLLECT_HISTORY	= 'h',
 };
 
-#define DETAILS_COLS		40
+#define DETAILS_COLS		68
+#define INFO_VALUE_LEN		50
 
 #define LIST_COL_1		31
 #define LIST_COL_2		55
@@ -116,6 +119,8 @@ static int c_use_colors = 1;
 static int c_show_details = 0;
 static int c_show_list = 1;
 static int c_show_info = 0;
+static int c_show_ipv4 = 1;
+static int c_show_ipv6 = 1;
 static int c_list_min = 6;
 
 static struct graph_cfg c_graph_cfg = {
@@ -347,7 +352,7 @@ static void draw_details(void)
 static void draw_help(void)
 {
 #define HW 46
-#define HH 19
+#define HH 21
 	int i, y = (rows/2) - (HH/2);
 	int x = (cols/2) - (HW/2);
 	char pad[HW+1];
@@ -396,16 +401,18 @@ static void draw_help(void)
 	mvaddnstr(y+ 9, x+3, "d             Toggle detailed statistics", -1);
 	mvaddnstr(y+10, x+3, "l             Toggle element list", -1);
 	mvaddnstr(y+11, x+3, "i             Toggle additional info", -1);
+	mvaddnstr(y+12, x+3, "4             Toggle IPv4 addresses", -1);
+	mvaddnstr(y+13, x+3, "6             Toggle IPv6 addresses", -1);
 
 	attron(A_BOLD | A_UNDERLINE);
-	mvaddnstr(y+13, x+1, "Graph Settings", -1);
+	mvaddnstr(y+15, x+1, "Graph Settings", -1);
 	attroff(A_BOLD | A_UNDERLINE);
 
-	mvaddnstr(y+14, x+3, "g             Toggle graphical statistics", -1);
-	mvaddnstr(y+15, x+3, "H             Start recording history data", -1);
-	mvaddnstr(y+16, x+3, "TAB           Switch time unit of graph", -1);
-	mvaddnstr(y+17, x+3, "<, >          Change number of graphs", -1);
-	mvaddnstr(y+18, x+3, "r             Reset counter of element", -1);
+	mvaddnstr(y+16, x+3, "g             Toggle graphical statistics", -1);
+	mvaddnstr(y+17, x+3, "H             Start recording history data", -1);
+	mvaddnstr(y+18, x+3, "TAB           Switch time unit of graph", -1);
+	mvaddnstr(y+19, x+3, "<, >          Change number of graphs", -1);
+	mvaddnstr(y+20, x+3, "r             Reset counter of element", -1);
 
 	attroff(A_STANDOUT);
 
@@ -863,18 +870,34 @@ static void draw_graph(void)
 	element_foreach_attr(current_element, &draw_attr_graph, &nattr);
 }
 
+static int info_is_visible(struct info *info)
+{
+	if (!strncasecmp(info->i_name, "IPv4[", 5))
+		return c_show_ipv4;
+	if (!strncasecmp(info->i_name, "IPv6[", 5))
+		return c_show_ipv6;
+	return 1;
+}
+
 static int lines_required_for_info(void)
 {
 	int lines = 1;
 
 	if (c_show_info) {
+		struct info *info;
+		int ninfo = 0;
+
 		info_cols = cols / DETAILS_COLS;
 
 		if (!info_cols)
 			info_cols = 1;
 
-		lines += (current_element->e_ninfo / info_cols);
-		if (current_element->e_ninfo % info_cols)
+		list_for_each_entry(info, &current_element->e_info_list, i_list)
+			if (info_is_visible(info))
+				ninfo++;
+
+		lines += (ninfo / info_cols);
+		if (ninfo % info_cols)
 			lines++;
 	}
 
@@ -885,12 +908,17 @@ static void __draw_info(struct element *e, struct info *info, int *ninfo)
 {
 	int ncol;
 
+	if (!info_is_visible(info))
+		return;
+
 	ncol = ((*ninfo) * DETAILS_COLS) - 1;
+
 	move(row, ncol);
 	if (ncol > 0)
 		addch(ACS_VLINE);
 
-	put_line(" %-14.14s %22.22s", info->i_name, info->i_value);
+	put_line(" %-14.14s %-*.*s", info->i_name,
+		 INFO_VALUE_LEN, INFO_VALUE_LEN, info->i_value);
 
 	if (++(*ninfo) >= info_cols) {
 		NEXT_ROW();
@@ -1202,6 +1230,14 @@ static int handle_input(int ch)
 			c_show_info = !c_show_info;
 			return 1;
 
+		case KEY_TOGGLE_IPV4:
+			c_show_ipv4 = !c_show_ipv4;
+			return 1;
+
+		case KEY_TOGGLE_IPV6:
+			c_show_ipv6 = !c_show_ipv6;
+			return 1;
+
 		case KEY_COLLECT_HISTORY:
 			if (current_attr) {
 				attr_start_collecting_history(current_attr);
@@ -1315,6 +1351,8 @@ static void print_module_help(void)
 	"    graph          Show graphical stats by default\n" \
 	"    details        Show detailed stats by default\n" \
 	"    info           Show additional info screen by default\n" \
+	"    ipv4[=0|1]     Show IPv4 addresses in additional info (default: 1)\n" \
+	"    ipv6[=0|1]     Show IPv6 addresses in additional info (default: 1)\n" \
 	"    minlist=INT    Minimum item list length\n");
 }
 
@@ -1343,6 +1381,10 @@ static void curses_parse_opt(const char *type, const char *value)
 		c_show_details = 1;
 	else if (!strcasecmp(type, "info"))
 		c_show_info = 1;
+	else if (!strcasecmp(type, "ipv4"))
+		c_show_ipv4 = value ? !!strtol(value, NULL, 0) : 1;
+	else if (!strcasecmp(type, "ipv6"))
+		c_show_ipv6 = value ? !!strtol(value, NULL, 0) : 1;
 	else if (!strcasecmp(type, "nocolors"))
 		c_use_colors = 0;
 	else if (!strcasecmp(type, "braille"))

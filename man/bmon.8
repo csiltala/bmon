@@ -137,8 +137,11 @@ The following output modules exist:
 .TP
 \fBcurses\fR
 Interactive curses based text user interface providing real time rate
-estimations and a graphical representatio nof each attribute. Press '?'
-to display the quick reference guide. This is the default output mode.
+estimations and a graphical representation of each attribute. Press '?'
+to display the quick reference guide. Additional interface information
+(including IPv4/IPv6 addresses when using the netlink input) can be
+toggled with '\fBi\fR'; use '\fB4\fR' and '\fB6\fR' to show or hide IPv4
+and IPv6 addresses. This is the default output mode.
 
 .TP
 \fBascii\fR
@@ -226,6 +229,12 @@ and eth1:
 .PP
 .RS 4
 \fBbmon \-p eth0,eth1 \-o curses\fP
+.RE
+.PP
+To start curses with the additional info panel and IPv6 addresses hidden:
+.PP
+.RS 4
+\fBbmon \-o curses:info;ipv6=0\fP
 .RE
 .PP
 To run bmon in format mode, monitoring any eth* interfaces, with a specified

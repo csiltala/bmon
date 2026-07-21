@@ -42,6 +42,7 @@ static struct bmon_module netlink_ops;
 #include <netlink/netlink.h>
 #include <netlink/cache.h>
 #include <netlink/utils.h>
+#include <netlink/route/addr.h>
 #include <netlink/route/link.h>
 #include <netlink/route/tc.h>
 #include <netlink/route/qdisc.h>
@@ -64,6 +65,10 @@ static struct bmon_module netlink_ops;
 #if LIBNL_CURRENT < 224
 # define RTNL_LINK_RX_NOHANDLER		-1
 #endif
+
+#define MAX_IPS	16
+#define INET_CIDR_MASK_STRLEN	3
+#define INET6_CIDR_MASK_STRLEN	4
 
 static struct attr_map link_attrs[] = {
 {
@@ -509,8 +514,16 @@ struct rdata {
 	int 			level;
 };
 
+struct link_addrs {
+	int		ifindex;
+	char	inet4_addrs[MAX_IPS][INET_ADDRSTRLEN + INET_CIDR_MASK_STRLEN];
+	int		inet4_count;
+	char	inet6_addrs[MAX_IPS][INET6_ADDRSTRLEN + INET6_CIDR_MASK_STRLEN];
+	int		inet6_count;
+};
+
 static struct nl_sock *sock;
-static struct nl_cache *link_cache, *qdisc_cache;
+static struct nl_cache *link_cache, *qdisc_cache, *addr_cache;
 
 static void update_tc_attrs(struct element *e, struct rtnl_tc *tc)
 {
@@ -718,9 +731,71 @@ static void handle_tc(struct element *e, struct rtnl_link *link)
 	nl_cache_free(class_cache);
 }
 
+static void get_addresses_cb(struct nl_object *obj, void *arg)
+{
+	struct rtnl_addr *addr = (struct rtnl_addr *) obj;
+	struct link_addrs *la = arg;
+	struct nl_addr *local;
+
+	if (rtnl_addr_get_ifindex(addr) == la->ifindex) {
+		local = rtnl_addr_get_local(addr);
+		if (local) {
+			if (rtnl_addr_get_family(addr) == AF_INET &&
+				la->inet4_count < MAX_IPS) {
+				nl_addr2str(local, la->inet4_addrs[la->inet4_count++],
+						sizeof(la->inet4_addrs[0]));
+			} else if (rtnl_addr_get_family(addr) == AF_INET6 &&
+					   la->inet6_count < MAX_IPS) {
+				nl_addr2str(local, la->inet6_addrs[la->inet6_count++],
+						sizeof(la->inet6_addrs[0]));
+			}
+		}
+	}
+}
+
+static void update_link_addrs(struct element *e, struct link_addrs *la)
+{
+	char addr_name_buf[16];
+	int i;
+
+	for (i = 0; i < la->inet4_count; i++) {
+		snprintf(addr_name_buf, sizeof(addr_name_buf),
+			 "IPv4[%u]", i + 1);
+		element_update_info(e, addr_name_buf, la->inet4_addrs[i]);
+	}
+	for (; i < MAX_IPS; i++) {
+		snprintf(addr_name_buf, sizeof(addr_name_buf),
+			 "IPv4[%u]", i + 1);
+		element_delete_info(e, addr_name_buf);
+	}
+
+	for (i = 0; i < la->inet6_count; i++) {
+		snprintf(addr_name_buf, sizeof(addr_name_buf),
+			 "IPv6[%u]", i + 1);
+		element_update_info(e, addr_name_buf, la->inet6_addrs[i]);
+	}
+	for (; i < MAX_IPS; i++) {
+		snprintf(addr_name_buf, sizeof(addr_name_buf),
+			 "IPv6[%u]", i + 1);
+		element_delete_info(e, addr_name_buf);
+	}
+}
+
 static void update_link_infos(struct element *e, struct rtnl_link *link)
 {
 	char buf[64];
+	int ifindex = rtnl_link_get_ifindex(link);
+	struct link_addrs la = { .ifindex = ifindex };
+	struct rtnl_addr *filter;
+
+	if (addr_cache && (filter = rtnl_addr_alloc())) {
+		rtnl_addr_set_ifindex(filter, ifindex);
+		nl_cache_foreach_filter(addr_cache, OBJ_CAST(filter),
+					get_addresses_cb, &la);
+		rtnl_addr_put(filter);
+	}
+
+	update_link_addrs(e, &la);
 
 	snprintf(buf, sizeof(buf), "%u", rtnl_link_get_mtu(link));
 	element_update_info(e, "MTU", buf);
@@ -732,11 +807,11 @@ static void update_link_infos(struct element *e, struct rtnl_link *link)
 				buf, sizeof(buf));
 	element_update_info(e, "Operstate", buf);
 
-	snprintf(buf, sizeof(buf), "%u", rtnl_link_get_ifindex(link));
+	snprintf(buf, sizeof(buf), "%u", ifindex);
 	element_update_info(e, "IfIndex", buf);
 
 	nl_addr2str(rtnl_link_get_addr(link), buf, sizeof(buf));
-	element_update_info(e, "Address", buf);
+	element_update_info(e, "MAC", buf);
 
 	nl_addr2str(rtnl_link_get_broadcast(link), buf, sizeof(buf));
 	element_update_info(e, "Broadcast", buf);
@@ -796,9 +871,6 @@ static void do_link(struct nl_object *obj, void *arg)
 		    element_set_usage_attr(e, "bytes"))
 			BUG();
 
-		/* FIXME: Update link infos every 1s or so */
-		update_link_infos(e, link);
-
 		e->e_flags &= ~ELEMENT_FLAG_CREATED;
 	}
 
@@ -823,6 +895,8 @@ static void do_link(struct nl_object *obj, void *arg)
 	if (!c_notc && qdisc_cache)
 		handle_tc(e, link);
 
+	update_link_infos(e, link);
+
 	element_notify_update(e, NULL);
 	element_lifesign(e, 1);
 }
@@ -833,6 +907,11 @@ static void netlink_read(void)
 
 	if ((err = nl_cache_resync(sock, link_cache, NULL, NULL)) < 0) {
 		fprintf(stderr, "Unable to resync link cache: %s\n", nl_geterror(err));
+		goto disable;
+	}
+
+	if ((err = nl_cache_resync(sock, addr_cache, NULL, NULL)) < 0) {
+		fprintf(stderr, "Unable to resync addr cache: %s\n", nl_geterror(err));
 		goto disable;
 	}
 
@@ -853,6 +932,7 @@ disable:
 static void netlink_shutdown(void)
 {
 	nl_cache_free(link_cache);
+	nl_cache_free(addr_cache);
 	nl_cache_free(qdisc_cache);
 	nl_socket_free(sock);
 }
@@ -887,6 +967,11 @@ static int netlink_do_init(void)
 		goto disable;
 	}
 
+	if ((err = rtnl_addr_alloc_cache(sock, &addr_cache)) < 0) {
+		fprintf(stderr, "Unable to allocate addr cache: %s\n", nl_geterror(err));
+		goto disable;
+	}
+
 	if ((err = rtnl_qdisc_alloc_cache(sock, &qdisc_cache)) < 0) {
 		fprintf(stderr, "Warning: Unable to allocate qdisc cache: %s\n", nl_geterror(err));
 		fprintf(stderr, "Disabling QoS statistics.\n");
@@ -911,22 +996,28 @@ disable:
 static int netlink_probe(void)
 {
 	struct nl_sock *sock;
-	struct nl_cache *lc;
+	struct nl_cache *lc, *ac;
 	int ret = 0;
 
 	if (!(sock = nl_socket_alloc()))
 		return 0;
 
-	if (nl_connect(sock, NETLINK_ROUTE) < 0)
+	if (nl_connect(sock, NETLINK_ROUTE) < 0) {
+		nl_socket_free(sock);
 		return 0;
+	}
 
 	if (rtnl_link_alloc_cache(sock, AF_UNSPEC, &lc) == 0) {
 		nl_cache_free(lc);
-		ret = 1;
+		ret++;
+	}
+
+	if (rtnl_addr_alloc_cache(sock, &ac) == 0) {
+		nl_cache_free(ac);
+		ret++;
 	}
 
 	nl_socket_free(sock);
-
 	return ret;
 }
 

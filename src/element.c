@@ -531,6 +531,22 @@ void element_update_info(struct element *e, const char *name, const char *value)
 	list_add_tail(&i->i_list, &e->e_info_list);
 }
 
+void element_delete_info(struct element *e, const char *name)
+{
+	struct info *i;
+
+	if (!(i = element_info_lookup(e, name)))
+		return;
+
+	xfree(i->i_name);
+	xfree(i->i_value);
+	list_del(&i->i_list);
+	xfree(i);
+
+	if (e->e_ninfo > 0)
+		e->e_ninfo--;
+}
+
 void element_set_txmax(struct element *e, uint64_t max)
 {
 	char buf[32];

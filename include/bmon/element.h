@@ -123,6 +123,8 @@ extern void			element_parse_policy(const char *);
 extern void			element_update_info(struct element *,
 						    const char *,
 						    const char *);
+extern void			element_delete_info(struct element *,
+						    const char *);
 
 extern void			element_set_txmax(struct element *, uint64_t);
 extern void			element_set_rxmax(struct element *, uint64_t);
