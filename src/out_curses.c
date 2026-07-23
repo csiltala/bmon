@@ -48,6 +48,7 @@ enum {
 	KEY_TOGGLE_INFO		= 'i',
 	KEY_TOGGLE_IPV4		= '4',
 	KEY_TOGGLE_IPV6		= '6',
+	KEY_TOGGLE_TC		= 't',
 	KEY_COLLECT_HISTORY	= 'h',
 };
 
@@ -121,6 +122,7 @@ static int c_show_list = 1;
 static int c_show_info = 0;
 static int c_show_ipv4 = 1;
 static int c_show_ipv6 = 1;
+static int c_show_tc = 1;
 static int c_list_min = 6;
 
 static struct graph_cfg c_graph_cfg = {
@@ -352,7 +354,7 @@ static void draw_details(void)
 static void draw_help(void)
 {
 #define HW 46
-#define HH 21
+#define HH 22
 	int i, y = (rows/2) - (HH/2);
 	int x = (cols/2) - (HW/2);
 	char pad[HW+1];
@@ -400,19 +402,20 @@ static void draw_help(void)
 
 	mvaddnstr(y+ 9, x+3, "d             Toggle detailed statistics", -1);
 	mvaddnstr(y+10, x+3, "l             Toggle element list", -1);
-	mvaddnstr(y+11, x+3, "i             Toggle additional info", -1);
-	mvaddnstr(y+12, x+3, "4             Toggle IPv4 addresses", -1);
-	mvaddnstr(y+13, x+3, "6             Toggle IPv6 addresses", -1);
+	mvaddnstr(y+11, x+3, "t             Toggle TC elements", -1);
+	mvaddnstr(y+12, x+3, "i             Toggle additional info", -1);
+	mvaddnstr(y+13, x+3, "4             Toggle IPv4 addresses", -1);
+	mvaddnstr(y+14, x+3, "6             Toggle IPv6 addresses", -1);
 
 	attron(A_BOLD | A_UNDERLINE);
-	mvaddnstr(y+15, x+1, "Graph Settings", -1);
+	mvaddnstr(y+16, x+1, "Graph Settings", -1);
 	attroff(A_BOLD | A_UNDERLINE);
 
-	mvaddnstr(y+16, x+3, "g             Toggle graphical statistics", -1);
-	mvaddnstr(y+17, x+3, "H             Start recording history data", -1);
-	mvaddnstr(y+18, x+3, "TAB           Switch time unit of graph", -1);
-	mvaddnstr(y+19, x+3, "<, >          Change number of graphs", -1);
-	mvaddnstr(y+20, x+3, "r             Reset counter of element", -1);
+	mvaddnstr(y+17, x+3, "g             Toggle graphical statistics", -1);
+	mvaddnstr(y+18, x+3, "H             Start recording history data", -1);
+	mvaddnstr(y+19, x+3, "TAB           Switch time unit of graph", -1);
+	mvaddnstr(y+20, x+3, "<, >          Change number of graphs", -1);
+	mvaddnstr(y+21, x+3, "r             Reset counter of element", -1);
 
 	attroff(A_STANDOUT);
 
@@ -580,6 +583,16 @@ static void draw_attr(double rate1, int prec1, char *unit1,
 		printw("%3s", "");
 }
 
+static int element_is_visible(struct element *e)
+{
+	if (!strncasecmp(e->e_name, "class ", 6) ||
+		!strncasecmp(e->e_name, "qdisc ", 6) ||
+		!strncasecmp(e->e_name, "cls ", 4))
+		return c_show_tc;
+		
+	return 1;
+}
+
 static void draw_element(struct element_group *g, struct element *e,
 			 void *arg)
 {
@@ -587,7 +600,7 @@ static void draw_element(struct element_group *g, struct element *e,
 
 	apply_layout(LAYOUT_LIST);
 
-	if (line_visible(*line)) {
+	if (line_visible(*line) && element_is_visible(e)) {
 		char *rxu1 = "", *txu1 = "", *rxu2 = "", *txu2 = "";
 		double rx1 = 0.0f, tx1 = 0.0f, rx2 = 0.0f, tx2 = 0.0f;
 		char pad[IFNAMSIZ + 32];
@@ -1238,6 +1251,10 @@ static int handle_input(int ch)
 			c_show_ipv6 = !c_show_ipv6;
 			return 1;
 
+		case KEY_TOGGLE_TC:
+			c_show_tc = !c_show_tc;
+			return 1;
+
 		case KEY_COLLECT_HISTORY:
 			if (current_attr) {
 				attr_start_collecting_history(current_attr);
@@ -1385,6 +1402,8 @@ static void curses_parse_opt(const char *type, const char *value)
 		c_show_ipv4 = value ? !!strtol(value, NULL, 0) : 1;
 	else if (!strcasecmp(type, "ipv6"))
 		c_show_ipv6 = value ? !!strtol(value, NULL, 0) : 1;
+	else if (!strcasecmp(type, "tc"))
+		c_show_tc = value ? !!strtol(value, NULL, 0) : 1;
 	else if (!strcasecmp(type, "nocolors"))
 		c_use_colors = 0;
 	else if (!strcasecmp(type, "braille"))
